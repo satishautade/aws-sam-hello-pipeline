@@ -1,0 +1,357 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "\nThis template generates a generic 2-environment (Staging/Prod) CI/CD\
+  \ Pipeline for Serverless Apps that use SAM (Serverless Application Model). This\
+  \ is a demonstration of using SAM CLI to init the build pipeline automatically.\n\
+  Charges may apply for AWS Services utilized - Below are a summary for your convenience:\n\
+  \n  GitHub: Manages and Stores your service source code (Git repository)\n  Amazon\
+  \ S3: Manages CodeBuild Artifacts as well as Cache for subsequent runs when defined\
+  \ in the build spec\n  AWS CodeBuild: Manages and Runs builds specified under buildspec.yaml\n\
+  \  AWS CodePipeline: Manages and Runs the Continuous Integration and Continuous\
+  \ Deployment pipeline\n  AWS CloudFormation: Manages SAM templates and creates the\
+  \ Infrastructure necessary for each environment\n  AWS IAM: Manages Identity and\
+  \ Access across Services outlined above\n"
+Outputs:
+  BuildArtifactS3Bucket:
+    Description: Amazon S3 Bucket for Pipeline and Build artifacts
+    Value:
+      Ref: BuildArtifactsBucket
+  CloudformationIAMRole:
+    Description: Cloudformation IAM Role
+    Value:
+      Fn::GetAtt:
+      - CloudFormationExecutionRole
+      - Arn
+  CodeBuildIAMRole:
+    Description: CodeBuild IAM Role
+    Value:
+      Fn::GetAtt:
+      - CodeBuildServiceRole
+      - Arn
+  CodeBuildProject:
+    Description: CodeBuild Project name
+    Value:
+      Ref: CodeBuildProject
+  CodePipeline:
+    Description: AWS CodePipeline pipeline name
+    Value:
+      Ref: Pipeline
+  CodePipelineIAMRole:
+    Description: CodePipeline IAM Role
+    Value:
+      Fn::GetAtt:
+      - CodePipelineExecutionRole
+      - Arn
+  GitHubRepositoryHttpUrl:
+    Description: GitHub Git repository
+    Value:
+      Fn::Sub: https://github.com/${GithubUser}/${GithubRepo}.git
+  GitHubRepositorySshUrl:
+    Description: GitHub Git repository
+    Value:
+      Fn::Sub: git@github.com:${GithubUser}/${GithubRepo}.git
+Parameters:
+  GithubRepo:
+    Default: /service/first-sam-pipeline/github/repo
+    Description: Gitub Repository name
+    Type: AWS::SSM::Parameter::Value<String>
+  GithubToken:
+    Default: /service/first-sam-pipeline/github/token
+    Description: Github OAuth Token with full permissions on admin:repo_hook and repo
+    NoEcho: true
+    Type: AWS::SSM::Parameter::Value<String>
+  GithubUser:
+    Default: /service/first-sam-pipeline/github/user
+    Description: Github user where the repository lives
+    Type: AWS::SSM::Parameter::Value<String>
+Resources:
+  BuildArtifactsBucket:
+    DeletionPolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      Tags:
+      - Key: Stack
+        Value:
+          Ref: AWS::StackName
+      - Key: Project
+        Value: first-sam-pipeline
+    Type: AWS::S3::Bucket
+  CloudFormationExecutionRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          Action: sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service: cloudformation.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AdministratorAccess
+      Path: /
+    Type: AWS::IAM::Role
+  CodeBuildProject:
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Cache:
+        Location:
+          Fn::Sub: ${BuildArtifactsBucket}/codebuild-cache
+        Type: S3
+      Description: Build project for project 'first-sam-pipeline'
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+        - Name: BUILD_OUTPUT_BUCKET
+          Value:
+            Ref: BuildArtifactsBucket
+        Image: aws/codebuild/dot-net:core-2.0
+        Type: LINUX_CONTAINER
+      Name: first-sam-pipeline-Build
+      ServiceRole:
+        Fn::GetAtt:
+        - CodeBuildServiceRole
+        - Arn
+      Source:
+        Type: CODEPIPELINE
+      Tags:
+      - Key: Stack
+        Value:
+          Ref: AWS::StackName
+      - Key: Project
+        Value: first-sam-pipeline
+    Type: AWS::CodeBuild::Project
+  CodeBuildServiceRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - codebuild.amazonaws.com
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Effect: Allow
+            Resource:
+            - Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/first-sam-pipeline-Build
+            - Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/first-sam-pipeline-Build:*
+          Version: '2012-10-17'
+        PolicyName: CodeBuildLogs
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - s3:GetObject
+            - s3:GetObjectVersion
+            - s3:PutObject
+            Effect: Allow
+            Resource:
+            - Fn::Sub: arn:aws:s3:::${BuildArtifactsBucket}/*
+          Version: '2012-10-17'
+        PolicyName: CodeBuildArtifactsBucket
+      - PolicyDocument:
+          Statement:
+          - Action: ssm:GetParameters
+            Effect: Allow
+            Resource: '*'
+          Version: '2012-10-17'
+        PolicyName: CodeBuildParameterStore
+    Type: AWS::IAM::Role
+  CodePipelineExecutionRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - codepipeline.amazonaws.com
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - iam:PassRole
+            - lambda:InvokeFunction
+            - lambda:ListFunctions
+            - lambda:InvokeAsyc
+            Effect: Allow
+            Resource: '*'
+          Version: '2012-10-17'
+        PolicyName: CodePipelineAccess
+      - PolicyDocument:
+          Statement:
+          - Action: s3:*
+            Effect: Allow
+            Resource:
+              Fn::Sub: arn:aws:s3:::${BuildArtifactsBucket}/*
+          Version: '2012-10-17'
+        PolicyName: CodePipelineCodeAndArtifactsS3Bucket
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - codebuild:StartBuild
+            - codebuild:BatchGetBuilds
+            Effect: Allow
+            Resource:
+            - Fn::Sub: arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${CodeBuildProject}
+          - Action:
+            - cloudformation:CreateStack
+            - cloudformation:DescribeStacks
+            - cloudformation:DeleteStack
+            - cloudformation:UpdateStack
+            - cloudformation:CreateChangeSet
+            - cloudformation:ExecuteChangeSet
+            - cloudformation:DeleteChangeSet
+            - cloudformation:DescribeChangeSet
+            - cloudformation:SetStackPolicy
+            - cloudformation:SetStackPolicy
+            - cloudformation:ValidateTemplate
+            Effect: Allow
+            Resource:
+            - Fn::Sub: arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/first-sam-pipeline*/*
+            - Fn::Sub: arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+          Version: '2012-10-17'
+        PolicyName: CodePipelineCodeBuildAndCloudformationAccess
+    Type: AWS::IAM::Role
+  Pipeline:
+    Properties:
+      ArtifactStore:
+        Location:
+          Ref: BuildArtifactsBucket
+        Type: S3
+      Name: first-sam-pipeline
+      RoleArn:
+        Fn::GetAtt:
+        - CodePipelineExecutionRole
+        - Arn
+      Stages:
+      - Actions:
+        - ActionTypeId:
+            Category: Source
+            Owner: ThirdParty
+            Provider: GitHub
+            Version: '1'
+          Configuration:
+            Branch: master
+            OAuthToken:
+              Ref: GithubToken
+            Owner:
+              Ref: GithubUser
+            Repo:
+              Ref: GithubRepo
+          Name: SourceCodeRepo
+          OutputArtifacts:
+          - Name: SourceCodeAsZip
+          RunOrder: 1
+        Name: Source
+      - Actions:
+        - ActionTypeId:
+            Category: Build
+            Owner: AWS
+            Provider: CodeBuild
+            Version: '1'
+          Configuration:
+            ProjectName:
+              Ref: CodeBuildProject
+          InputArtifacts:
+          - Name: SourceCodeAsZip
+          Name: CodeBuild
+          OutputArtifacts:
+          - Name: BuildArtifactAsZip
+        Name: Build
+      - Actions:
+        - ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: '1'
+          Configuration:
+            ActionMode: CHANGE_SET_REPLACE
+            Capabilities: CAPABILITY_IAM
+            ChangeSetName: first-sam-pipeline-ChangeSet-Staging
+            RoleArn:
+              Fn::GetAtt:
+              - CloudFormationExecutionRole
+              - Arn
+            StackName: first-sam-pipeline-Staging
+            TemplatePath: BuildArtifactAsZip::packaged.yaml
+          InputArtifacts:
+          - Name: BuildArtifactAsZip
+          Name: CreateChangeSet
+          RunOrder: 1
+        - ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: '1'
+          Configuration:
+            ActionMode: CHANGE_SET_EXECUTE
+            ChangeSetName: first-sam-pipeline-ChangeSet-Staging
+            RoleArn:
+              Fn::GetAtt:
+              - CloudFormationExecutionRole
+              - Arn
+            StackName: first-sam-pipeline-Staging
+          Name: ExecuteChangeSet
+          OutputArtifacts:
+          - Name: first-sam-pipelineStagingChangeSet
+          RunOrder: 2
+        Name: Staging
+      - Actions:
+        - ActionTypeId:
+            Category: Approval
+            Owner: AWS
+            Provider: Manual
+            Version: '1'
+          Name: DeploymentApproval
+          RunOrder: 1
+        - ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: '1'
+          Configuration:
+            ActionMode: CHANGE_SET_REPLACE
+            Capabilities: CAPABILITY_IAM
+            ChangeSetName: first-sam-pipeline-ChangeSet-Prod
+            RoleArn:
+              Fn::GetAtt:
+              - CloudFormationExecutionRole
+              - Arn
+            StackName: first-sam-pipeline-Prod
+            TemplatePath: BuildArtifactAsZip::packaged.yaml
+          InputArtifacts:
+          - Name: BuildArtifactAsZip
+          Name: CreateChangeSet
+          RunOrder: 2
+        - ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: '1'
+          Configuration:
+            ActionMode: CHANGE_SET_EXECUTE
+            ChangeSetName: first-sam-pipeline-ChangeSet-Prod
+            RoleArn:
+              Fn::GetAtt:
+              - CloudFormationExecutionRole
+              - Arn
+            StackName: first-sam-pipeline-Prod
+          Name: ExecuteChangeSet
+          OutputArtifacts:
+          - Name: first-sam-pipelineProdChangeSet
+          RunOrder: 3
+        Name: Prod
+    Type: AWS::CodePipeline::Pipeline
